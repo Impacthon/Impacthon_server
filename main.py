@@ -8,9 +8,11 @@ from pydantic import BaseModel
 from typing import Union
 from os import environ
 from hashlib import sha256
-#from hmac import new as hmac
+
+# from hmac import new as hmac
 
 load_dotenv()
+
 
 class Environment:
     def __init__(self):
@@ -18,10 +20,12 @@ class Environment:
         self.db = self.client[environ["mongo_db"]]
         self.secret_key = environ["secret_key"]
 
+
 class User(BaseModel):
     user_id: str
     name: str
     password: Union[str, None]
+
 
 env = Environment()
 app = FastAPI()
@@ -33,11 +37,12 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+
 @app.post("/register")
 async def register(
-    user_id: Union[str, None] = Header(default=None, alias="id"),
-    name: Union[str, None] = Header(default=None),
-    password: Union[str, None] = Header(default=None)
+        user_id: Union[str, None] = Header(default=None, alias="id"),
+        name: Union[str, None] = Header(default=None),
+        password: Union[str, None] = Header(default=None)
 ) -> User:
     pw = sha256(password).hexdigest()
     if user_id is None or name is None or password is None:
@@ -47,10 +52,11 @@ async def register(
     await env.db.members.insert_one({"user_id": user_id, "name": name, "password": pw})
     return User(user_id, name, None)
 
+
 @app.post("/login")
 async def login(
-    user_id: Union[str, None] = Header(default=None, alias="id"),
-    password: Union[str, None] = Header(default=None)
+        user_id: Union[str, None] = Header(default=None, alias="id"),
+        password: Union[str, None] = Header(default=None)
 ) -> str:
     if id is None or password is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request")
@@ -58,3 +64,16 @@ async def login(
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
     return encode({"user_id": user_id, "name": user.name}, env.secret_key)
+
+
+@app.post("/registerExpert")
+async def register_export(
+        user_id: Union[str, None] = Header(default=None, alias="id"),
+        detail_data: Union[str, None] = Header(default=None, alias="detail")
+):
+    if user_id is None or detail_data is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request")
+    if await env.db.experts.find_one({"user_id": user_id}) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
+    await env.db.experts.insert_one({"user_id": user_id, "detail": detail_data})
+    return {"user_id": user_id, "detail": detail_data}
