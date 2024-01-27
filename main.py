@@ -1,11 +1,13 @@
 import asyncio
+import json
 from hashlib import sha256 as _sha256
 from os import environ
-from typing import Union
+from typing import Dict, Union
 
 from bson import ObjectId
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, WebSocket, status
+from fastapi import (FastAPI, Header, HTTPException, Request, Response,
+                     WebSocket, status)
 from fastapi.middleware.cors import CORSMiddleware
 from jwt import InvalidTokenError, decode, encode
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -27,6 +29,7 @@ class User(BaseModel):
     user_id: str
     name: str
     gender: str
+    password: str
     hashtags: list[str]
     description: str
 
@@ -80,43 +83,60 @@ app.add_middleware(
 
 @app.post("/register")
 async def register(
-    user_id: Union[str, None] = Header(default=None, alias="id"),
-    name: Union[str, None] = Header(default=None),
-    password: Union[str, None] = Header(default=None),
-    gender: Union[str, None] = Header(default=None),
-    hashtags: Union[str, None] = Header(default=None),
-    description: Union[str, None] = Header(default=None),
-) -> User:
-    unwrap(user_id, name, password, gender, hashtags, description)
-    hashtags = [i.strip() for i in hashtags.split(",")]
-    pw = sha256(password)
-    if await env.db.members.find_one({"user_id": user_id}) is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
-    await env.db.members.insert_one(
-        {
-            "user_id": user_id,
-            "name": name,
-            "password": pw,
-            "gender": gender,
-            "description": description,
-            "hashtags": hashtags,
-        }
-    )
-    return User(
-        user_id=user_id,
-        name=name,
-        gender=gender,
-        hashtags=hashtags,
-        description=description,
-    )
+    request: Request,
+    response: Response,
+    user_id: str = None,
+    name: str = None,
+    password: str = None,
+    gender: str = None,
+    hashtags: str = None,
+    description: str = None,
+) -> Union[bool, Dict[str, str]]:
+
+    if gender is None and hashtags is None and description is None:
+        if (await env.db.members.find_one({"user_id": user_id})) is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
+        pw = sha256(password)
+        # if (await env.db.member.find_one({"_id": })) is None:
+        #     raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
+        await env.db.members.insert_one(
+            {
+                "user_id": user_id,
+                "name": name,
+                "password": pw,
+                "gender": None,
+                "hashtags": None,
+                "description": None,
+            }
+        )
+        return True
+    else:
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request"
+            )
+        else:
+            await env.db.members.update_one(
+                {"user_id": user_id},
+                {
+                    "$set": {
+                        "gender": gender,
+                        "hashtags": hashtags,
+                        "description": description,
+                    }
+                },
+            )
+            return True
 
 
 @app.post("/login")
 async def login(
-    user_id: Union[str, None] = Header(default=None, alias="id"),
-    password: Union[str, None] = Header(default=None),
+    user_id: str,
+    password: str,
 ) -> str:
-    unwrap(user_id, password)
+    print(user_id)
+    print(password)
+    print(sha256(password))
     user = await env.db.members.find_one(
         {"user_id": user_id, "password": sha256(password)}
     )
