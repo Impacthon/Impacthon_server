@@ -147,19 +147,6 @@ async def login(
     return encode({"user_id": user_id, "name": user["name"]}, env.secret_key)
 
 
-@app.post("/registerExpert")
-async def register_expert(
-    user_id: Union[str, None] = Header(default=None, alias="id"),
-    detail_data: Union[str, None] = Header(default=None, alias="detail"),
-    authjwt: Union[str, None] = Header(default=None),
-):
-    unwrap(user_id, detail_data, authjwt)
-    if await env.db.experts.find_one({"user_id": user_id}) is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
-    validate_token(authjwt)
-    await env.db.experts.insert_one({"user_id": user_id, "detail": detail_data})
-    return {"user_id": user_id, "detail": detail_data}
-
 
 @app.post("/post/new")
 async def new_post(
