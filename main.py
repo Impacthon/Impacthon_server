@@ -1,9 +1,27 @@
 from fastapi import FastAPI, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from jwt import encode
+from dotenv import load_dotenv
+from motor.motor_asyncio import AsyncIOMotorClient
+from pydantic import BaseModel
 
 from typing import Union
+from os import environ
+from hashlib import sha256
 
+load_dotenv()
+
+class Environment:
+    def __init__(self):
+        self.client = AsyncIOMotorClient(environ["mongo_uri"])
+        self.db = self.client[environ["mongo_db"]]
+
+class User(BaseModel):
+    user_id: str
+    name: str
+    password: Union[str, None]
+
+env = Environment()
 app = FastAPI()
 
 app.add_middleware(
@@ -15,22 +33,26 @@ app.add_middleware(
 
 @app.post("/register")
 async def register(
-    id: Union[str, None] = Header(default=None),
+    user_id: Union[str, None] = Header(default=None, alias="id"),
     name: Union[str, None] = Header(default=None),
     password: Union[str, None] = Header(default=None)
-):
-    if id is None or name is None or password is None:
+) -> User:
+    pw = sha256(password).hexdigest()
+    if user_id is None or name is None or password is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request")
-    # TODO duplicate check and push to db
-    return {"id": id, "name": name, "password": password}
+    if await env.db.members.find_one({"user_id": user_id, "password": pw}) is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
+    await env.db.members.insert_one({"user_id": user_id, "name": name, "password": pw})
+    return User(user_id, name, None)
 
 @app.post("/login")
 async def login(
-    id: Union[str, None] = Header(default=None),
+    user_id: Union[str, None] = Header(default=None, alias="id"),
     password: Union[str, None] = Header(default=None)
-):
+) -> str:
     if id is None or password is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request")
-    # TODO auth and get db info
-    name = "test"
-    return encode({"id": id, "name": name}, "A13E4E2D3A7651E5BBC6A1AAF9AD6")
+    user = await env.db.members.find_one({"user_id": user_id, "password": sha256(password).hexdigest()})
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
+    return encode({"user_id": user_id, "name": user.name}, "A13E4E2D3A7651E5BBC6A1AAF9AD6")
