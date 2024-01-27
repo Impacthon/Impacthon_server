@@ -5,7 +5,7 @@ from typing import Union
 
 from bson import ObjectId
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, status
+from fastapi import FastAPI, Header, HTTPException, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
 from jwt import InvalidTokenError, decode, encode
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -27,7 +27,6 @@ class User(BaseModel):
     user_id: str
     name: str
     gender: str
-    password: Union[str, None]
     hashtags: list[str]
     description: str
 
@@ -36,7 +35,7 @@ class Post(BaseModel):
     title: str
     user: User
     post_id: str
-    image: str
+    image_url: str
 
 
 env = Environment()
@@ -55,12 +54,23 @@ def unwrap(*args):
             )
 
 
-def validate_token(token: str) -> bool:
+def jwt_decode(token: str) -> dict:
+    return decode(token, env.secret_key, ["HS256"])
+
+
+def validate_token(token: str):
     try:
-        decode(token, env.secret_key, ["HS256"])
+        jwt_decode(token)
     except InvalidTokenError:
-        return False
-    return True
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+        )
+
+
+async def get_chat_history(chat_id: str) -> tuple:
+    chat = await env.db.chat.find_one({"_id": chat_id})
+    chat_history = chat["history"]
+    return (chat, chat_history)
 
 
 app.add_middleware(
@@ -78,7 +88,7 @@ async def register(
     description: Union[str, None] = Header(default=None),
 ) -> User:
     unwrap(user_id, name, password, gender, hashtags, description)
-    hashtags = hashtags.split(",")
+    hashtags = [i.strip() for i in hashtags.split(",")]
     pw = sha256(password)
     if await env.db.members.find_one({"user_id": user_id}) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
@@ -95,7 +105,6 @@ async def register(
     return User(
         user_id=user_id,
         name=name,
-        password=None,
         gender=gender,
         hashtags=hashtags,
         description=description,
@@ -122,10 +131,12 @@ async def login(
 async def register_expert(
     user_id: Union[str, None] = Header(default=None, alias="id"),
     detail_data: Union[str, None] = Header(default=None, alias="detail"),
+    authjwt: Union[str, None] = Header(default=None),
 ):
-    unwrap(user_id, detail_data)
+    unwrap(user_id, detail_data, authjwt)
     if await env.db.experts.find_one({"user_id": user_id}) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
+    validate_token(authjwt)
     await env.db.experts.insert_one({"user_id": user_id, "detail": detail_data})
     return {"user_id": user_id, "detail": detail_data}
 
@@ -134,62 +145,50 @@ async def register_expert(
 async def new_post(
     authjwt: Union[str, None] = Header(default=None),
     title: Union[str, None] = Header(default=None),
-    image: Union[str, None] = Header(default=None),
+    image_url: Union[str, None] = Header(default=None),
 ) -> Post:
-    unwrap(authjwt, title, image)
-    if not validate_token(authjwt):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-        )
-    _user = decode(authjwt, env.secret_key, ["HS256"])
+    unwrap(authjwt, title, image_url)
+    validate_token(authjwt)
+    _user = jwt_decode(authjwt)
     user = await env.db.members.find_one({"user_id": _user["user_id"]})
     unwrap(user)
     res = await env.db.posts.insert_one(
-        {"title": title, "user_id": _user["user_id"], "image": image}
+        {"title": title, "user_id": _user["user_id"], "image_url": image_url}
     )
-    user["password"] = None
-    return Post(title=title, user=user, post_id=str(res.inserted_id), image=image)
+    del user["password"]
+    return Post(
+        title=title, user=user, post_id=str(res.inserted_id), image_url=image_url
+    )
 
 
 @app.get("/post")
 async def get_post(
     authjwt: Union[str, None] = Header(default=None),
-    post_id: str = Header(default=None),
+    post_id: Union[str, None] = Header(default=None),
 ) -> Post:
     unwrap(authjwt, post_id)
-    if not validate_token(authjwt):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-        )
+    validate_token(authjwt)
     _user = decode(authjwt, env.secret_key, ["HS256"])
     user = await env.db.members.find_one({"user_id": _user["user_id"]})
     unwrap(user)
     post = await env.db.posts.find_one({"_id": ObjectId(post_id)})
     if post is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
-    return Post(title=post["title"], user=user, post_id=post_id, image=post["image"])
+    return Post(
+        title=post["title"], user=user, post_id=post_id, image_url=post["image_url"]
+    )
 
 
 @app.get("/posts")
-async def get_posts(
-    authjwt: Union[str, None] = Header(default=None), length: int = Header(default=100)
-) -> list[Post]:
-    unwrap(authjwt)
-    if not validate_token(authjwt):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
-        )
-    _user = decode(authjwt, env.secret_key, ["HS256"])
-    user = await env.db.members.find_one({"user_id": _user["user_id"]})
-    unwrap(user)
+async def get_posts(length: int = Header(default=10)) -> list[Post]:
     posts = []
     for post in await env.db.posts.find({}).to_list(length=length):
         posts.append(
             Post(
                 title=post["title"],
-                user=await env.db.members.find_one({"user_id": _user["user_id"]}),
+                user=await env.db.members.find_one({"user_id": post["user_id"]}),
                 post_id=str(post["_id"]),
-                image=post["image"],
+                image_url=post["image_url"],
             )
         )
     return list(posts)
@@ -197,10 +196,7 @@ async def get_posts(
 
 @app.get("/search")
 async def search(query: Union[str, None] = Header(default=None)):
-    if query is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request"
-        )
+    validate_token(query)
     return await env.db.experts.find({"detail": {"$regex": query}}).to_list(None)
 
 
@@ -208,10 +204,7 @@ async def search(query: Union[str, None] = Header(default=None)):
 async def chatlist(
     user_id: Union[str, None] = Header(default=None, alias="id")
 ) -> list:
-    if user_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request"
-        )
+    validate_token(user_id)
     return await env.db.chat.find(
         ({"$or": [{"chat1": user_id}, {"chat2": user_id}]})
     ).to_list(None)
@@ -250,12 +243,10 @@ async def create_chat(chat_id: str, chat1: str, chat2: str):
 @app.websocket("/chat/{chat_id}/{user_id}")
 async def chat_ws(websocket: WebSocket, chat_id: str, user_id: str):
     await websocket.accept()
-    chat = await env.db.chat.find_one({"_id": chat_id})
-    chat_history = chat["history"]
+    (chat, chat_history) = await get_chat_history(chat_id)
     if chat is None:
         await env.db.chat.insert_one({"_id": chat_id, "history": []})
-        chat = await env.db.chat.find_one({"_id": chat_id})
-        chat_history = chat["history"]
+        (chat, chat_history) = await get_chat_history(chat_id)
     else:
         if (chat["chat1"] != user_id) and (chat["chat2"] != user_id):
             raise HTTPException(
@@ -263,7 +254,7 @@ async def chat_ws(websocket: WebSocket, chat_id: str, user_id: str):
             )
     await websocket.send_text(str(chat_history))
     while True:
-        _new_chat_history = (await env.db.chat.find_one({"_id": chat_id}))["history"]
+        _new_chat_history = await get_chat_history(chat_id)[1]
         if chat_history != _new_chat_history:
             chat_history = _new_chat_history
             await websocket.send_text(str(chat_history[-1]))
@@ -274,6 +265,6 @@ async def chat_ws(websocket: WebSocket, chat_id: str, user_id: str):
                 {"_id": chat_id},
                 {"$push": {"history": {"user_id": user_id, "data": data}}},
             )
-            chat_history = (await env.db.chat.find_one({"_id": chat_id}))["history"]
+            chat_history = await get_chat_history(chat_id)[1]
         except asyncio.TimeoutError:
             pass
