@@ -147,7 +147,6 @@ async def login(
     return encode({"user_id": user_id, "name": user["name"]}, env.secret_key)
 
 
-
 @app.post("/post/new")
 async def new_post(
     authjwt: Union[str, None] = Header(default=None),
