@@ -1,22 +1,23 @@
+import asyncio
 from hashlib import sha256
 from os import environ
 from typing import Union
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, status
 from fastapi.middleware.cors import CORSMiddleware
-from jwt import encode
+from jwt import decode, encode
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
-# from hmac import new as hmac
-
-load_dotenv()
+load_dotenv(verbose=True)
 
 
 class Environment:
     def __init__(self):
-        self.client = AsyncIOMotorClient(environ["mongo_uri"])
+        self.client = AsyncIOMotorClient(
+            environ["mongo_uri"], tls=True, tlsAllowInvalidCertificates=True
+        )
         self.db = self.client[environ["mongo_db"]]
         self.secret_key = environ["secret_key"]
 
@@ -84,3 +85,76 @@ async def register_export(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Conflict")
     await env.db.experts.insert_one({"user_id": user_id, "detail": detail_data})
     return {"user_id": user_id, "detail": detail_data}
+
+
+@app.get("/search")
+async def search(query: Union[str, None] = Header(default=None)):
+    if query is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request"
+        )
+    return await env.db.experts.find({"detail": {"$regex": query}}).to_list(None)
+
+
+@app.get("/chatlist")
+async def chatlist(
+    user_id: Union[str, None] = Header(default=None, alias="id")
+) -> list:
+    if user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Bad Request"
+        )
+    return await env.db.chat.find(
+        ({"$or": [{"chat1": user_id}, {"chat2": user_id}]})
+    ).to_list(None)
+
+
+@app.post("/chat/create")
+async def create_chat(request: Request):
+    params = dict(request.query_params)
+    await env.db.chat.insert_one(
+        {
+            "_id": params["chat_id"],
+            "chat1": params["chat1"],
+            "chat2": params["chat2"],
+            "history": [],
+        }
+    )
+    return {
+        "chat_id": params["chat_id"],
+        "chat1": params["chat1"],
+        "chat2": params["chat2"],
+        "history": [],
+    }
+
+
+@app.websocket("/chat/{chat_id}/{user_id}")
+async def chat_ws(websocket: WebSocket, chat_id: str, user_id: str):
+    await websocket.accept()
+    chat = await env.db.chat.find_one({"_id": chat_id})
+    chat_history = chat["history"]
+    if chat is None:
+        await env.db.chat.insert_one({"_id": chat_id, "history": []})
+        chat = await env.db.chat.find_one({"_id": chat_id})
+        chat_history = chat["history"]
+    else:
+        if (chat["chat1"] != user_id) and (chat["chat2"] != user_id):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized"
+            )
+    await websocket.send_text(str(chat_history))
+    while True:
+        _new_chat_history = (await env.db.chat.find_one({"_id": chat_id}))["history"]
+        if chat_history != _new_chat_history:
+            chat_history = _new_chat_history
+            await websocket.send_text(str(chat_history[-1]))
+
+        try:
+            data = await asyncio.wait_for(websocket.receive_text(), timeout=10)
+            await env.db.chat.update_one(
+                {"_id": chat_id},
+                {"$push": {"history": {"user_id": user_id, "data": data}}},
+            )
+            chat_history = (await env.db.chat.find_one({"_id": chat_id}))["history"]
+        except asyncio.TimeoutError:
+            pass
