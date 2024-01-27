@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from typing import Union
 from os import environ
 from hashlib import sha256
+#from hmac import new as hmac
 
 load_dotenv()
 
@@ -15,6 +16,7 @@ class Environment:
     def __init__(self):
         self.client = AsyncIOMotorClient(environ["mongo_uri"])
         self.db = self.client[environ["mongo_db"]]
+        self.secret_key = environ["secret_key"]
 
 class User(BaseModel):
     user_id: str
@@ -55,4 +57,4 @@ async def login(
     user = await env.db.members.find_one({"user_id": user_id, "password": sha256(password).hexdigest()})
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
-    return encode({"user_id": user_id, "name": user.name}, "A13E4E2D3A7651E5BBC6A1AAF9AD6")
+    return encode({"user_id": user_id, "name": user.name}, env.secret_key)
