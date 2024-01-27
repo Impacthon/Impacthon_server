@@ -109,21 +109,32 @@ async def chatlist(
     ).to_list(None)
 
 
-@app.post("/chat/create")
-async def create_chat(request: Request):
-    params = dict(request.query_params)
+@app.post(
+    "/chat/create",
+    description="""
+chat_id: 채팅 아이디(UUID4)\n
+chat1: 채팅 참가자 1 아이디(로그인 시 아이디 입력)\n
+chat2: 채팅 참가자 2 아이디(로그인 시 아이디 입력)
+""",
+)
+async def create_chat(chat_id: str, chat1: str, chat2: str):
+    """
+    chat_id: str
+    chat1: str
+    chat2: str
+    """
     await env.db.chat.insert_one(
         {
-            "_id": params["chat_id"],
-            "chat1": params["chat1"],
-            "chat2": params["chat2"],
+            "_id": chat_id,
+            "chat1": chat1,
+            "chat2": chat2,
             "history": [],
         }
     )
     return {
-        "chat_id": params["chat_id"],
-        "chat1": params["chat1"],
-        "chat2": params["chat2"],
+        "chat_id": chat_id,
+        "chat1": chat1,
+        "chat2": chat2,
         "history": [],
     }
 
